@@ -1,3 +1,4 @@
+import argparse
 import os
 import sqlite3
 from enum import Enum
@@ -11,11 +12,10 @@ class Status(Enum):
 
 
 class CringeMeterBot:
-    def __init__(self):
-        API_TOKEN = "6183785202:AAF5A6yBpfTpkw0Wi2xBEHrzlLO1I9JWWUs"
-        self.db_path = "database_prod.db"
+    def __init__(self, api_token, sqlite_db_path):
+        self.db_path = sqlite_db_path
         self.example_chart_path = "example_chart.jpg"
-        self.telegram_bot = telebot.TeleBot(API_TOKEN)
+        self.telegram_bot = telebot.TeleBot(api_token)
         self.waitlist = {}
         self._initialize_database()
         self._initialize_handlers()
@@ -285,6 +285,7 @@ class CringeMeterBot:
                         f" score(user_id, university_id, subject_id, score, date)"
                         f" VALUES ({chat_id}, {university_id}, {subject_id}, {score}, \"{date}\")",
                     )
+                    con.commit()
                     con.close()
                     text = f"Записал {score} для {subject_name} в {university_name}"
                     self.telegram_bot.send_message(chat_id, text)
@@ -294,5 +295,9 @@ class CringeMeterBot:
 
 
 if __name__ == "__main__":
-    bot = CringeMeterBot()
+    parser = argparse.ArgumentParser(description="Course cringe meter telegram bot")
+    parser.add_argument("-t", "--api_token")
+    parser.add_argument("-p", "--sqlite_db")
+    args = parser.parse_args()
+    bot = CringeMeterBot(args.api_token, args.sqlite_db)
     bot.telegram_bot.infinity_polling()
