@@ -1,9 +1,9 @@
 import argparse
-import os
-import sqlite3
 from enum import Enum
 
 import telebot
+
+from database_handler import SQLiteDB
 
 
 class Status(Enum):
@@ -11,287 +11,298 @@ class Status(Enum):
     WAIT_FOR_UNIVERSITY_NAME = 2
 
 
+class ReturnCode(Enum):
+    DELETE_RESPONSE_REQUEST = 1
+    DELETE_RESPONSE = 2
+
+
 class CringeMeterBot:
     def __init__(self, api_token, sqlite_db_path):
         self.db_path = sqlite_db_path
-        self.example_chart_path = "example_chart.jpg"
-        self.telegram_bot = telebot.TeleBot(api_token)
-        self.waitlist = {}
-        self._initialize_database()
+        self.bot_api = telebot.TeleBot(api_token, skip_pending=True)
+        self.database = SQLiteDB(sqlite_db_path)
         self._initialize_handlers()
+        self._add_demo_data()
 
-    def _initialize_database(self):
-        if not os.path.exists(self.db_path):
-            con = sqlite3.connect(self.db_path)
-            cur = con.cursor()
-            cur.execute(
-                "CREATE TABLE user_activity ("
-                "   id INTEGER PRIMARY KEY,"
-                "   university_id INTEGER,"
-                "   subject_id INTEGER"
-                ")"
-            )
-            cur.execute(
-                "CREATE TABLE subject ("
-                "   id INTEGER PRIMARY KEY,"
-                "   name TEXT NOT NULL UNIQUE"
-                ")"
-            )
-            cur.execute(
-                "CREATE TABLE university ("
-                "   id INTEGER PRIMARY KEY,"
-                "   name TEXT NOT NULL UNIQUE"
-                ")"
-            )
-            cur.execute(
-                "CREATE TABLE score ("
-                "   id INTEGER PRIMARY KEY,"
-                "   user_id INTEGER,"
-                "   university_id INTEGER,"
-                "   subject_id INTEGER,"
-                "   score INTEGER NOT NULL,"
-                "   date FLOAT,"
-                "   FOREIGN KEY (user_id) REFERENCES user_activity(id),"
-                "   FOREIGN KEY (university_id) REFERENCES university(id),"
-                "   FOREIGN KEY (subject_id) REFERENCES subject(id)"
-                ")"
-            )
-            con.commit()
-            con.close()
+    def _add_demo_data(self):
+        for university_name in ["ИТМО", "ЛЭТИ", "СПБГУ"]:
+            self.database.append_university(university_name)
+        for subject_name in ["ArchNN", "BigData", "IRME"]:
+            self.database.append_subject(subject_name)
+
+    def _build_menu_markup(self):
+        markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+        select_university_button = telebot.types.KeyboardButton("Изменить университет")
+        current_university_button = telebot.types.KeyboardButton("Текущий университет")
+        select_subject_button = telebot.types.KeyboardButton("Изменить предмет")
+        current_subject_button = telebot.types.KeyboardButton("Текущий предмет")
+        markup.add(select_university_button, current_university_button, select_subject_button, current_subject_button)
+        return markup
 
     def _initialize_handlers(self):
-        self.telegram_bot.message_handler(commands=["start"])(self.send_welcome)
-        self.telegram_bot.message_handler(commands=["help"])(self.send_help)
-        self.telegram_bot.message_handler(commands=["cancel"])(self.cancel)
-        self.telegram_bot.message_handler(commands=["select_subject"])(self.select_subject)
-        self.telegram_bot.message_handler(commands=["select_university"])(self.select_university)
-        self.telegram_bot.message_handler(
-            func=lambda message: message.chat.id in self.waitlist.keys(),
-        )(self.handle_waitlist)
-        self.telegram_bot.message_handler(content_types=["text"])(self.get_score)
+        # Callback query handlers. The handlers and processed in the declaration order.
+        self.bot_api.callback_query_handler(func=lambda call: True)(self._callback_query_handler)
+        # Message handlers. The handlers and processed in the declaration order.
+        #   Command handlers
+        self.bot_api.message_handler(commands=["start"])(self.on_start)
+        # #   Menu button handlers
+        self.bot_api.message_handler(func=lambda msg: msg.text == "Изменить университет")(self.on_change_university)
+        self.bot_api.message_handler(func=lambda msg: msg.text == "Текущий университет")(self.on_get_current_university)
+        self.bot_api.message_handler(func=lambda msg: msg.text == "Изменить предмет")(self.on_change_subject)
+        self.bot_api.message_handler(func=lambda msg: msg.text == "Текущий предмет")(self.on_get_current_subject)
+        # #   Data handlers
+        if_user_await = lambda msg: self.database.get_user_current_state(msg.chat.id)[-1] != 0
+        self.bot_api.message_handler(func=if_user_await)(self._on_wait_new_entry_message)
+        self.bot_api.message_handler(content_types=["text"])(self.on_get_score)
 
-    def add_user_to_db(self, chat_id):
-        con = sqlite3.connect(self.db_path)
-        cur = con.cursor()
-        cur.execute(f"INSERT OR IGNORE INTO user_activity(id) VALUES ({chat_id})")
-        con.commit()
-        con.close()
+    def _delete_response_request_messages(self, chat_id, response_message_id, request_message_id=None):
+        if request_message_id is not None:
+            self.bot_api.delete_message(chat_id, request_message_id)
+        self.bot_api.delete_message(chat_id, response_message_id)
+        # self.user__state[chat_id].clear_awaiting()
+        self.database.clear_user_awaiting(chat_id)
 
-    def send_welcome(self, message):
+    # ___
+
+    def _maybe_continue_on_start(self, message):
         chat_id = message.chat.id
-        self.add_user_to_db(chat_id)
-        welcome_message = "Привет!\n" \
-                          "Я предлагаю тебе присоединиться к сбору статистики по уровню кринжа на парах.\n" \
-                          "Укажи свой университет с помощью команды /select_university\n" \
-                          "Укажи предмет с помощью команды /select_subject.\n" \
-                          "Напиши /help чтобы снова увидеть эту подсказку.\n" \
-                          "Шкала оценивания: 0 - минимальный кринж (база), 10 - кринжевый кринж.\n" \
-                          "Ставить оценок можешь сколько угодно.\n" \
-                          "Ожидаем вот такие графики курса кринжа на примере <университета>:"
-        self.telegram_bot.send_photo(chat_id, caption=welcome_message, photo=open(self.example_chart_path, 'rb'))
+        ready, _, _, _, _, _ = self.database.get_user_current_state(chat_id)
+        if not ready:
+            self.on_start(message, send_welcome=False)
 
-    def send_help(self, message):
+    def _is_wait_for_university_promt(self, chat_id):
+        _, _, _, _, _, wait_for = self.database.get_user_current_state(chat_id)
+        return wait_for == Status.WAIT_FOR_UNIVERSITY_NAME.value
+
+    def _is_wait_for_subject_promt(self, chat_id):
+        _, _, _, _, _, wait_for = self.database.get_user_current_state(chat_id)
+        return wait_for == Status.WAIT_FOR_SUBJECT_NAME.value
+
+    def on_get_score(self, message):
         chat_id = message.chat.id
-        text = "/help - справка\n" \
-               "/select_university - выбор университета\n" \
-               "/select_subject - выбор предмета\n" \
-               "/cancel - отмена последнего действия\n" \
-               "Шкала оценивания: 0 - минимальный кринж (база), 10 - кринжевый кринж."
-        self.telegram_bot.send_message(chat_id, text)
-
-    def select_subject(self, message):
-        chat_id = message.chat.id
-        self.waitlist[chat_id] = Status.WAIT_FOR_SUBJECT_NAME
-        text = "Напиши мне название предмета, который ты оцениваешь." \
-               " Для отмены действия напиши /cancel."
-        self.telegram_bot.send_message(chat_id, text)
-
-    def select_university(self, message):
-        chat_id = message.chat.id
-        self.waitlist[chat_id] = Status.WAIT_FOR_UNIVERSITY_NAME
-        text = "Напиши мне название своего университета, что я не напутал рейтинг." \
-               " Для отмены действия напиши /cancel."
-        self.telegram_bot.send_message(chat_id, text)
-
-    def handle_waitlist(self, message):
-        chat_id = message.chat.id
-        if self.waitlist[chat_id] == Status.WAIT_FOR_SUBJECT_NAME:
-            self.get_subject_name(message)
-        elif self.waitlist[chat_id] == Status.WAIT_FOR_UNIVERSITY_NAME:
-            self.get_university_name(message)
-
-    def add_subject_to_db(self, subject_name):
-        con = sqlite3.connect(self.db_path)
-        cur = con.cursor()
-        cur.execute(
-            f"INSERT OR IGNORE"
-            f" INTO subject(name)"
-            f" VALUES (\"{subject_name}\")",
-        )
-        con.commit()
-        con.close()
-
-    def set_subject_for_user(self, chat_id, subject_name):
-        con = sqlite3.connect(self.db_path)
-        cur = con.cursor()
-        subject_id = cur.execute(
-            f"SELECT id"
-            f" FROM subject"
-            f" WHERE name=\"{subject_name}\"",
-        ).fetchone()[0]
-        cur.execute(
-            f"UPDATE user_activity"
-            f" SET subject_id ={subject_id}"
-            f" WHERE id={chat_id}",
-        )
-        con.commit()
-        con.close()
-
-    def get_subject_name(self, message):
-        chat_id = message.chat.id
-        subject_name = message.text
-        self.add_subject_to_db(subject_name)
-        self.set_subject_for_user(chat_id, subject_name)
-        del (self.waitlist[chat_id])
-        text = f"Все последующие оценки будут записаны для предмета \"{subject_name}\"." \
-               f" Для смены предмета напиши /select_subject."
-        self.telegram_bot.send_message(chat_id, text)
-        university_id, subject_id = self.get_user_current_state(chat_id)
-        if university_id is not None and subject_id is not None:
-            text = f"Всё готово. Теперь ты можешь оценивать уровень кринжа"
-            self.telegram_bot.send_message(chat_id, text)
-        else:
-            if university_id is None:
-                text = "Выбери свой университет с помощью /select_university"
-                self.telegram_bot.send_message(chat_id, text)
-            if subject_id is None:
-                text = "Выбери предмет с помощью /select_subject"
-                self.telegram_bot.send_message(chat_id, text)
-
-    def add_university_to_db(self, university_name):
-        con = sqlite3.connect(self.db_path)
-        cur = con.cursor()
-        cur.execute(
-            f"INSERT OR IGNORE"
-            f" INTO university(name)"
-            f" VALUES (\"{university_name}\")",
-        )
-        con.commit()
-        con.close()
-
-    def set_university_for_user(self, chat_id, university_name):
-        con = sqlite3.connect(self.db_path)
-        cur = con.cursor()
-        university_id = cur.execute(
-            f"SELECT id"
-            f" FROM university"
-            f" WHERE name=\"{university_name}\"",
-        ).fetchone()[0]
-        cur.execute(
-            f"UPDATE user_activity"
-            f" SET university_id ={university_id}"
-            f" WHERE id={chat_id}",
-        )
-        con.commit()
-        con.close()
-
-    def get_university_name(self, message):
-        chat_id = message.chat.id
-        university_name = message.text
-        self.add_university_to_db(university_name)
-        self.set_university_for_user(chat_id, university_name)
-        del (self.waitlist[chat_id])
-        text = f"Все последующие оценки будут записаны для \"{university_name}\"." \
-               f" Для смены университета напиши /select_university."
-        self.telegram_bot.send_message(chat_id, text)
-        university_id, subject_id = self.get_user_current_state(chat_id)
-        if university_id is not None and subject_id is not None:
-            text = f"Всё готово. Теперь ты можешь оценивать уровень кринжа.\n" \
-                   f"Шкала оценивания: 0 - минимальный кринж (база), 10 - кринжевый кринж."
-            self.telegram_bot.send_message(chat_id, text)
-        else:
-            if university_id is None:
-                text = "Выбери свой университет с помощью /select_university"
-                self.telegram_bot.send_message(chat_id, text)
-            if subject_id is None:
-                text = "Выбери предмет с помощью /select_subject"
-                self.telegram_bot.send_message(chat_id, text)
-
-    def cancel(self, message):
-        chat_id = message.chat.id
-        try:
-            del (self.waitlist[chat_id])
-        except KeyError:
-            pass
-
-    def get_user_current_state(self, chat_id):
-        con = sqlite3.connect(self.db_path)
-        cur = con.cursor()
-        university_id, subject_id = cur.execute(
-            f"SELECT university_id, subject_id"
-            f" FROM user_activity"
-            f" WHERE id={chat_id}"
-        ).fetchone()
-        con.close()
-        return university_id, subject_id
-
-    def id2university(self, university_id):
-        con = sqlite3.connect(self.db_path)
-        cur = con.cursor()
-        university_name = cur.execute(
-            f"SELECT name"
-            f" FROM university"
-            f" WHERE id = {university_id}",
-        ).fetchone()[0]
-        con.close()
-        return university_name
-
-    def id2subject(self, subject_id):
-        con = sqlite3.connect(self.db_path)
-        cur = con.cursor()
-        subject_name = cur.execute(
-            f"SELECT name"
-            f" FROM subject"
-            f" WHERE id = {subject_id}",
-        ).fetchone()[0]
-        con.close()
-        return subject_name
-
-    def get_score(self, message):
-        chat_id = message.chat.id
-        university_id, subject_id = self.get_user_current_state(chat_id)
+        _, university_id, subject_id, _, _, _ = self.database.get_user_current_state(chat_id)
         if university_id is None or subject_id is None:
             if university_id is None:
                 text = "Выбери свой университет с помощью /select_university"
-                self.telegram_bot.send_message(chat_id, text)
+                self.bot_api.send_message(chat_id, text)
             if subject_id is None:
                 text = "Выбери предмет с помощью /select_subject"
-                self.telegram_bot.send_message(chat_id, text)
+                self.bot_api.send_message(chat_id, text)
         else:
             try:
                 score = int(message.text)
                 if not 0 <= score <= 10:
                     text = "Шкала кринжа от 0 до 10."
-                    self.telegram_bot.send_message(chat_id, text)
+                    self.bot_api.send_message(chat_id, text)
                 else:
-                    university_id, subject_id = self.get_user_current_state(chat_id)
-                    university_name = self.id2university(university_id)
-                    subject_name = self.id2subject(subject_id)
+                    university_name = self.database.id2university(university_id)
+                    subject_name = self.database.id2subject(subject_id)
                     date = message.date
-                    con = sqlite3.connect(self.db_path)
-                    cur = con.cursor()
-                    cur.execute(
-                        f"INSERT INTO"
-                        f" score(user_id, university_id, subject_id, score, date)"
-                        f" VALUES ({chat_id}, {university_id}, {subject_id}, {score}, \"{date}\")",
-                    )
-                    con.commit()
-                    con.close()
+                    self.database.append_score(chat_id, university_id, subject_id, score, date)
                     text = f"Записал {score} для {subject_name} в {university_name}"
-                    self.telegram_bot.send_message(chat_id, text)
+                    self.bot_api.send_message(chat_id, text)
             except ValueError:
                 text = "Жду от тебя текущий уровень кринжа по шкале от 0 до 10."
-                self.telegram_bot.send_message(chat_id, text)
+                self.bot_api.send_message(chat_id, text)
+
+    def _handle_university_promt(self, chat_id, university_name):
+        self.database.append_university(university_name)
+        university_id = self.database.university2id(university_name)
+        self.database.set_university_for_user(chat_id, university_id)
+        text = f"Все последующие оценки будут записаны для {university_name}."
+        self.bot_api.send_message(chat_id, text)
+        return ReturnCode.DELETE_RESPONSE
+
+    def _handle_subject_promt(self, chat_id, subject_name):
+        self.database.append_subject(subject_name)
+        subject_id = self.database.subject2id(subject_name)
+        self.database.set_subject_for_user(chat_id, subject_id)
+        text = f"Все последующие оценки будут записаны для {subject_name}."
+        self.bot_api.send_message(chat_id, text)
+        return ReturnCode.DELETE_RESPONSE
+
+    def _on_wait_new_entry_message(self, message):
+        chat_id = message.chat.id
+        try:
+            _ = int(message.text)
+            maybe_typed_score = False
+        except ValueError:
+            maybe_typed_score = True
+        if self._is_wait_for_university_promt(chat_id):
+            if maybe_typed_score:
+                text = "Думаю, ты хотел ввести уровень кринжа. Отмени или закончи текущий выбор университета."
+                self.bot_api.send_message(chat_id, text)
+            return_code = self._handle_university_promt(chat_id, message.text)
+        elif self._is_wait_for_subject_promt(chat_id):
+            if maybe_typed_score:
+                text = "Думаю, ты хотел ввести уровень кринжа. Отмени или закончи текущий выбор предмета."
+                self.bot_api.send_message(chat_id, text)
+            return_code = self._handle_subject_promt(chat_id, message.text)
+        else:
+            return
+        if return_code == ReturnCode.DELETE_RESPONSE:
+            _, _, _, response_message_id, _, _ = self.database.get_user_current_state(chat_id)
+            self._delete_response_request_messages(chat_id, response_message_id, None)
+        else:
+            raise ValueError(f"Invalid return code: {return_code}")
+        self._maybe_continue_on_start(message)
+
+    def _handle_university_selection(self, chat_id, university_id):
+        if university_id != "None":
+            self.database.set_university_for_user(chat_id, university_id)
+            university_name = self.database.id2university(university_id)
+            text = f"Все последующие оценки будут записаны для {university_name}."
+            self.bot_api.send_message(chat_id, text)
+            return ReturnCode.DELETE_RESPONSE
+        else:
+            return ReturnCode.DELETE_RESPONSE_REQUEST
+
+    def _handle_subject_selection(self, chat_id, subject_id):
+        if subject_id != "None":
+            self.database.set_subject_for_user(chat_id, subject_id)
+            subject_name = self.database.id2subject(subject_id)
+            text = f"Все последующие оценки будут записаны для \"{subject_name}\"."
+            self.bot_api.send_message(chat_id, text)
+            return ReturnCode.DELETE_RESPONSE
+        else:
+            return ReturnCode.DELETE_RESPONSE_REQUEST
+
+    def _maybe_cancel_previous_menu(self, chat_id):
+        _, _, _, response_message_id, request_message_id, wait_for = self.database.get_user_current_state(chat_id)
+        if wait_for == 1:
+            self._delete_response_request_messages(chat_id, response_message_id, request_message_id)
+
+    def _callback_query_handler(self, callback_query):
+        chat_id = callback_query.message.chat.id
+        split = callback_query.data.split(":")
+        if len(split) > 1 and split[0] == "university_id":
+            return_code = self._handle_university_selection(chat_id, university_id=split[1])
+        elif len(split) > 1 and split[0] == "subject_id":
+            return_code = self._handle_subject_selection(chat_id, subject_id=split[1])
+        else:
+            return
+        if return_code == ReturnCode.DELETE_RESPONSE:
+            _, _, _, response_message_id, _, _ = self.database.get_user_current_state(chat_id)
+            self._delete_response_request_messages(chat_id, response_message_id, None)
+        elif return_code == ReturnCode.DELETE_RESPONSE_REQUEST:
+            _, _, _, response_message_id, request_message_id, _ = self.database.get_user_current_state(chat_id)
+            self._delete_response_request_messages(
+                chat_id,
+                response_message_id,
+                request_message_id,
+            )
+        else:
+            raise ValueError(f"Invalid return code: {return_code}")
+        self._maybe_continue_on_start(callback_query.message)
+
+    def send_welcome(self, chat_id):
+        welcome_message = "Привет!\n" \
+                          "Я предлагаю тебе присоединиться к сбору статистики по уровню кринжа на парах.\n" \
+                          "Шкала оценивания: 0 - ноль кринжа, 10 - кринжевый кринж.\n" \
+                          "Ставить оценок можешь сколько угодно."
+        self.bot_api.send_message(chat_id, text=welcome_message)
+
+    def show_keyboard_menu(self, chat_id):
+        text = "Я готов к использованию.\n" \
+               "Нажми \"Изменить предмет\" чтобы изменить предмет.\n" \
+               "Нажми \"Изменить университет\" чтобы изменить университет.\n"
+        menu_markup = self._build_menu_markup()
+        self.bot_api.send_message(chat_id, text=text, reply_markup=menu_markup)
+
+    def _ask_to_select(
+            self,
+            message,
+            response_message_text,
+            id_name,
+            callback_data_prefix,
+            status,
+            cancel_option=True,
+    ):
+        chat_id = message.chat.id
+        markup = telebot.types.InlineKeyboardMarkup()
+        if cancel_option:
+            markup.add(telebot.types.InlineKeyboardButton("Отмена", callback_data=f"{callback_data_prefix}:None"))
+        for id, name in id_name:
+            callback_data = f"{callback_data_prefix}:{id}"
+            markup.add(telebot.types.InlineKeyboardButton(name, callback_data=callback_data))
+        response_message = self.bot_api.send_message(chat_id, response_message_text, reply_markup=markup)
+        self.database.set_wait_for_user(chat_id, status.value)
+        self.database.set_response_message_id_for_user(chat_id, response_message.id)
+        self.database.set_request_message_id_for_user(chat_id, message.id)
+
+    def _ask_to_select_university(self, message, cancel_option=True):
+        university_id_name = self.database.get_all_universities()
+        response_message_text = "Выбери свой университет из списка или напиши свой."
+        self._ask_to_select(
+            message,
+            response_message_text,
+            university_id_name,
+            "university_id",
+            Status.WAIT_FOR_UNIVERSITY_NAME,
+            cancel_option,
+        )
+
+    def _ask_to_select_subject(self, message, cancel_option=True):
+        subject_id_name = self.database.get_all_subjects()
+        response_message_text = "Выбери предмет из списка или напиши свой."
+        self._ask_to_select(
+            message,
+            response_message_text,
+            subject_id_name,
+            "subject_id",
+            Status.WAIT_FOR_SUBJECT_NAME,
+            cancel_option,
+        )
+
+    # Command events
+    def on_start(self, message, send_welcome=True):
+        chat_id = message.chat.id
+        self.database.append_user(chat_id)
+        if send_welcome:
+            self.send_welcome(chat_id)
+        _, university_id, subject_id, _, _, _ = self.database.get_user_current_state(chat_id)
+        if university_id is None:
+            self._ask_to_select_university(message, cancel_option=False)  # Add decorator that calls `on_start` again
+            return
+        elif university_id is not None and send_welcome:
+            university_name = self.database.id2university(university_id)
+            self.bot_api.send_message(
+                chat_id,
+                text=f"У тебя выбран университет {university_name}",
+            )
+        if subject_id is None:
+            self._ask_to_select_subject(message, cancel_option=False)  # Add decorator that calls `on_start` again
+            return
+        elif subject_id is not None and send_welcome:
+            subject_name = self.database.id2subject(subject_id)
+            self.bot_api.send_message(
+                chat_id,
+                text=f"У тебя выбран предмет {subject_name}",
+            )
+        if university_id is not None and subject_id is not None:
+            self.database.set_ready_for_user(chat_id)
+            self.show_keyboard_menu(chat_id)
+
+    # Button events
+    def on_change_university(self, message):
+        self._maybe_cancel_previous_menu(message.chat.id)
+        self._ask_to_select_university(message)
+
+    def on_change_subject(self, message):
+        self._maybe_cancel_previous_menu(message.chat.id)
+        self._ask_to_select_subject(message)
+
+    def on_get_current_university(self, message):
+        chat_id = message.chat.id
+        self._maybe_cancel_previous_menu(message.chat.id)
+        _, university_id, _, _, _, _ = self.database.get_user_current_state(chat_id)
+        self.bot_api.send_message(chat_id, f"Текущий выбор университета: {self.database.id2university(university_id)}")
+
+    def on_get_current_subject(self, message):
+        self._maybe_cancel_previous_menu(message.chat.id)
+        chat_id = message.chat.id
+        _, _, subject_id, _, _, _ = self.database.get_user_current_state(chat_id)
+        self.bot_api.send_message(chat_id, f"Текущий выбор предмета: {self.database.id2subject(subject_id)}")
 
 
 if __name__ == "__main__":
@@ -300,4 +311,4 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--sqlite_db")
     args = parser.parse_args()
     bot = CringeMeterBot(args.api_token, args.sqlite_db)
-    bot.telegram_bot.infinity_polling()
+    bot.bot_api.infinity_polling()
