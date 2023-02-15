@@ -56,8 +56,8 @@ class CringeMeterBot:
         self.bot_api.message_handler(commands=["change_university"])(self.on_change_university)
         self.bot_api.message_handler(commands=["current_university"])(self.on_get_current_university)
         # #   Menu button handlers
-        self.bot_api.message_handler(func=lambda msg: msg.text == "Изменить предмет")(self.on_change_subject)
-        self.bot_api.message_handler(func=lambda msg: msg.text == "Текущий предмет")(self.on_get_current_subject)
+        self.bot_api.message_handler(func=lambda msg: msg.text == "Выбрать предмет")(self.on_change_subject)
+        self.bot_api.message_handler(func=lambda msg: msg.text == "Выбранный предмет")(self.on_get_current_subject)
         # #   Data handlers
         if_user_await = lambda msg: self.database.get_user_current_state(msg.chat.id)[-1] != 0
         self.bot_api.message_handler(func=if_user_await)(self._on_wait_new_entry_message)
