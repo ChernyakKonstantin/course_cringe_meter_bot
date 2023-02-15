@@ -125,18 +125,20 @@ class CringeMeterBot:
         chat_id = message.chat.id
         try:
             _ = int(message.text)
-            maybe_typed_score = False
-        except ValueError:
             maybe_typed_score = True
+        except ValueError:
+            maybe_typed_score = False
         if self._is_wait_for_university_promt(chat_id):
             if maybe_typed_score:
                 text = "Думаю, ты хотел ввести уровень кринжа. Отмени или закончи текущий выбор университета."
                 self.bot_api.send_message(chat_id, text)
+                return
             return_code = self._handle_university_promt(chat_id, message.text)
         elif self._is_wait_for_subject_promt(chat_id):
             if maybe_typed_score:
                 text = "Думаю, ты хотел ввести уровень кринжа. Отмени или закончи текущий выбор предмета."
                 self.bot_api.send_message(chat_id, text)
+                return
             return_code = self._handle_subject_promt(chat_id, message.text)
         else:
             return
