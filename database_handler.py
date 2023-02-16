@@ -44,7 +44,8 @@ class SQLiteDB:
                 "   university_id INTEGER NOT NULL,"
                 "   subject_id INTEGER NOT NULL,"
                 "   FOREIGN KEY (university_id) REFERENCES university(id),"
-                "   FOREIGN KEY (subject_id) REFERENCES subject(id)"
+                "   FOREIGN KEY (subject_id) REFERENCES subject(id),"
+                "   UNIQUE(university_id, subject_id)"
                 ")"
             )
             cur.execute(
