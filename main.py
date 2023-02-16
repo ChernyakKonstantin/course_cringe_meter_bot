@@ -387,9 +387,9 @@ class CringeMeterBot:
                 chat_id = chat_id[0]
                 self.bot_api.set_my_commands([], telebot.types.BotCommandScopeChat(chat_id))
                 self.bot_api.send_message(chat_id, text, reply_markup=telebot.types.ReplyKeyboardRemove())
-            except telebot.apihelper.ApiTelegramException:
+            except:
                 with open("blacklist.txt", "a") as f:
-                    f.writelines([chat_id, ])
+                    f.writelines([str(chat_id), ])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Course cringe meter telegram bot")
