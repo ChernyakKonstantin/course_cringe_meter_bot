@@ -17,18 +17,26 @@ class ReturnCode(Enum):
 
 
 class CringeMeterBot:
-    def __init__(self, api_token, sqlite_db_path):
+    def __init__(self, api_token, sqlite_db_path, debug=False):
         self.db_path = sqlite_db_path
         self.bot_api = telebot.TeleBot(api_token, skip_pending=True)
         self.database = SQLiteDB(sqlite_db_path)
         self._initialize_handlers()
-        self._add_demo_data()
+        if debug:
+            self._add_demo_data()
 
     def _add_demo_data(self):
+        university_ids = []
+        subject_ids = []
         for university_name in ["ИТМО", "ЛЭТИ", "СПБГУ"]:
             self.database.append_university(university_name)
+            university_ids.append(self.database.university2id(university_name))
         for subject_name in ["ArchNN", "BigData", "IRME"]:
             self.database.append_subject(subject_name)
+            subject_ids.append(self.database.subject2id(subject_name))
+        self.database.append_subject_to_university(university_ids[0], subject_ids[0])
+        self.database.append_subject_to_university(university_ids[0], subject_ids[1])
+        self.database.append_subject_to_university(university_ids[1], subject_ids[2])
 
     def _build_menu_markup(self):
         markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -124,7 +132,9 @@ class CringeMeterBot:
     def _handle_subject_promt(self, chat_id, subject_name):
         self.database.append_subject(subject_name)
         subject_id = self.database.subject2id(subject_name)
+        _, university_id, _, _, _, _ = self.database.get_user_current_state(chat_id)
         self.database.set_subject_for_user(chat_id, subject_id)
+        self.database.append_subject_to_university(university_id, subject_id)
         text = f"Все последующие оценки будут записаны для {subject_name}."
         self.bot_api.send_message(chat_id, text)
         return ReturnCode.DELETE_RESPONSE
@@ -185,15 +195,28 @@ class CringeMeterBot:
     def _callback_query_handler(self, callback_query):
         chat_id = callback_query.message.chat.id
         split = callback_query.data.split(":")
+        ask_to_select_subject = False
         if len(split) > 1 and split[0] == "university_id":
             return_code = self._handle_university_selection(chat_id, university_id=split[1])
+            ask_to_select_subject = return_code == ReturnCode.DELETE_RESPONSE
         elif len(split) > 1 and split[0] == "subject_id":
             return_code = self._handle_subject_selection(chat_id, subject_id=split[1])
         else:
             return
         if return_code == ReturnCode.DELETE_RESPONSE:
-            _, _, _, response_message_id, _, _ = self.database.get_user_current_state(chat_id)
+            ready, _, _, response_message_id, _, _ = self.database.get_user_current_state(chat_id)
             self._delete_response_request_messages(chat_id, response_message_id, None)
+            if ask_to_select_subject and ready:
+                message = telebot.types.Message(
+                    message_id=-1,
+                    from_user=telebot.types.User(id=None, is_bot=None, first_name=None),
+                    date=None,
+                    chat=telebot.types.Chat(id=chat_id, type=None),
+                    content_type=None,
+                    options={},
+                    json_string=None,
+                )
+                self._ask_to_select_subject(message=message, cancel_option=False)
         elif return_code == ReturnCode.DELETE_RESPONSE_REQUEST:
             _, _, _, response_message_id, request_message_id, _ = self.database.get_user_current_state(chat_id)
             self._delete_response_request_messages(
@@ -253,7 +276,11 @@ class CringeMeterBot:
         )
 
     def _ask_to_select_subject(self, message, cancel_option=True):
-        subject_id_name = self.database.get_all_subjects()
+        chat_id = message.chat.id
+        _, university_id, subject_id, _, _, _ = self.database.get_user_current_state(chat_id)
+        subject_ids = [i[0] for i in self.database.get_university_subjects(university_id)]
+        subject_names = [self.database.id2subject(i) for i in subject_ids]
+        subject_id_name = list(zip(subject_ids, subject_names))
         response_message_text = "Выбери предмет из списка или напиши свой."
         self._ask_to_select(
             message,
@@ -342,6 +369,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Course cringe meter telegram bot")
     parser.add_argument("-t", "--api_token")
     parser.add_argument("-p", "--sqlite_db")
+    parser.add_argument("-d", "--debug", action="store_true")
     args = parser.parse_args()
-    bot = CringeMeterBot(args.api_token, args.sqlite_db)
+    bot = CringeMeterBot(args.api_token, args.sqlite_db, args.debug)
     bot.bot_api.infinity_polling()

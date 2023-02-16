@@ -39,6 +39,16 @@ class SQLiteDB:
                 ")"
             )
             cur.execute(
+                "CREATE TABLE university_subject ("
+                "   id INTEGER PRIMARY KEY,"
+                "   university_id INTEGER NOT NULL,"
+                "   subject_id INTEGER NOT NULL,"
+                "   FOREIGN KEY (university_id) REFERENCES university(id),"
+                "   FOREIGN KEY (subject_id) REFERENCES subject(id),"
+                "   UNIQUE(university_id, subject_id)"
+                ")"
+            )
+            cur.execute(
                 "CREATE TABLE score ("
                 "   id INTEGER PRIMARY KEY,"
                 "   user_id INTEGER,"
@@ -75,11 +85,10 @@ class SQLiteDB:
         universities = self._execute(sql_statement)
         return universities
 
-    # TODO: Probably i need dedicated table to store subject-university pairs
-    # def get_university_subjects(self, university_id: int=None) -> List[Tuple[int, str]]:
-    # sql_statement = f"SELECT * from subject WHERE id={university_id}"
-    def get_all_subjects(self) -> List[Tuple[int, str]]:
-        sql_statement = f"SELECT * from subject"
+    def get_university_subjects(self, university_id: int = None) -> List[Tuple[int, str]]:
+        sql_statement = f"SELECT subject_id" \
+                        f" from university_subject" \
+                        f" WHERE university_id={university_id}"
         subjects = self._execute(sql_statement)
         return subjects
 
@@ -114,6 +123,17 @@ class SQLiteDB:
             f"INSERT OR IGNORE"
             f" INTO subject(name)"
             f" VALUES (\"{subject_name}\")",
+        )
+        con.commit()
+        con.close()
+
+    def append_subject_to_university(self, university_id, subject_id):
+        con = sqlite3.connect(self.db_path)
+        cur = con.cursor()
+        cur.execute(
+            f"INSERT OR IGNORE"
+            f" INTO university_subject(university_id, subject_id)"
+            f" VALUES ({university_id}, {subject_id})",
         )
         con.commit()
         con.close()
