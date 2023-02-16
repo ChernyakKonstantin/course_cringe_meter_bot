@@ -51,6 +51,8 @@ class CringeMeterBot:
             telebot.types.BotCommand("/help", "Показать справку"),
             telebot.types.BotCommand("/change_university", "Сменить университет"),
             telebot.types.BotCommand("/current_university", "Показать выбранный университет"),
+            telebot.types.BotCommand("/change_subject", "Сменить предмет"),
+            telebot.types.BotCommand("/current_subject", "Показать выбранный предмет"),
         ]
         self.bot_api.set_my_commands(commands, telebot.types.BotCommandScopeChat(chat_id))
 
@@ -63,6 +65,8 @@ class CringeMeterBot:
         self.bot_api.message_handler(commands=["help"])(self.on_help)
         self.bot_api.message_handler(commands=["change_university"])(self.on_change_university)
         self.bot_api.message_handler(commands=["current_university"])(self.on_get_current_university)
+        self.bot_api.message_handler(commands=["change_subject"])(self.on_change_subject)
+        self.bot_api.message_handler(commands=["current_subject"])(self.on_get_current_subject)
         # #   Menu button handlers
         self.bot_api.message_handler(func=lambda msg: msg.text == "Выбрать предмет")(self.on_change_subject)
         self.bot_api.message_handler(func=lambda msg: msg.text == "Выбранный предмет")(self.on_get_current_subject)
@@ -231,14 +235,12 @@ class CringeMeterBot:
     def send_welcome(self, chat_id):
         welcome_message = "Привет!\n" \
                           "Я предлагаю тебе присоединиться к сбору статистики по уровню кринжа на парах.\n" \
-                          "Шкала оценивания: 0 - ноль кринжа, 10 - кринжевый кринж.\n" \
-                          "Ставить оценок можешь сколько угодно."
+                          "Это очень просто!"
         self.bot_api.send_message(chat_id, text=welcome_message)
 
     def _show_keyboard_menu(self, chat_id):
         text = "Я готов к использованию.\n" \
-               "Нажми \"Изменить предмет\" чтобы изменить предмет.\n" \
-               "Нажми \"Изменить университет\" чтобы изменить университет.\n"
+               "Нажми /help, чтобы увидеть справку."
         menu_markup = self._build_menu_markup()
         self.bot_api.send_message(chat_id, text=text, reply_markup=menu_markup)
 
@@ -265,7 +267,10 @@ class CringeMeterBot:
 
     def _ask_to_select_university(self, message, cancel_option=True):
         university_id_name = self.database.get_all_universities()
-        response_message_text = "Выбери свой университет из списка или напиши свой."
+        if len(university_id_name) == 0:
+            response_message_text = "Напиши название своего университета."
+        else:
+            response_message_text = "Выбери свой университет из списка или напиши свой."
         self._ask_to_select(
             message,
             response_message_text,
@@ -281,7 +286,10 @@ class CringeMeterBot:
         subject_ids = [i[0] for i in self.database.get_university_subjects(university_id)]
         subject_names = [self.database.id2subject(i) for i in subject_ids]
         subject_id_name = list(zip(subject_ids, subject_names))
-        response_message_text = "Выбери предмет из списка или напиши свой."
+        if len(subject_id_name) == 0:
+            response_message_text = "Напиши название предмета."
+        else:
+            response_message_text = "Выбери предмет из списка или напиши свой."
         self._ask_to_select(
             message,
             response_message_text,
@@ -323,19 +331,17 @@ class CringeMeterBot:
 
     def on_help(self, message):
         chat_id = message.chat.id
-        text = "Я предлагаю тебе присоединиться к сбору статистики по уровню кринжа на парах. Это так просто сделать!\n" \
-               "Как только наберется достаточно данных - будем рисовать графики акций но уровень кринжа на парах.\n\n" \
-               "Шкала оценивания: 0 - ноль кринжа, 10 - кринжевый кринж.\n" \
+        text = "Шкала оценивания: 0 - ноль кринжа, 10 - кринжевый кринж.\n" \
                "Ставить оценок можешь сколько угодно.\n\n" \
-               "Чтобы сменить университет иди быстро узнать выбранный зайди в меню команд.\n\n" \
-               "Для смены предмета нажми кнопку \"Выбрать предмет\".\n" \
-               "Чтобы быстро узнать выбранный предмет нажми \"Выбранный предмет\".\n\n" \
-               "Все сообщения, которые ты будешь писать в чате будут записаны как твоя оценка уровня кринжа."
+               "Список доступных команд ты можешь увидеть в меню.\n" \
+               "Для смены предмета нажми кнопку \"Выбрать предмет\" или выбери этот пункт в меню.\n" \
+               "Чтобы быстро узнать выбранный предмет нажми \"Выбранный предмет\" или выбери этот пункт в меню.\n\n" \
+               "Все прочие сообщения, которые ты будешь писать в чате будут записаны как твоя оценка уровня кринжа."
         self.bot_api.send_message(chat_id, text)
 
     def on_change_university(self, message):
         chat_id = message.chat.id
-        ready, university_id, _, _, _, _ = self.database.get_user_current_state(chat_id)
+        ready, _, _, _, _, _ = self.database.get_user_current_state(chat_id)
         if ready != 1:
             self.bot_api.send_message(chat_id, "Для начала закончи выбор университета и предмета.")
         else:
@@ -352,17 +358,24 @@ class CringeMeterBot:
             university_name = self.database.id2university(university_id)
             self.bot_api.send_message(chat_id, f"Текущий выбор университета: {university_name}")
 
-    # Button events
-
     def on_change_subject(self, message):
-        self._maybe_cancel_previous_menu(message.chat.id)
-        self._ask_to_select_subject(message)
+        chat_id = message.chat.id
+        ready, _, _, _, _, _ = self.database.get_user_current_state(chat_id)
+        if ready != 1:
+            self.bot_api.send_message(chat_id, "Для начала закончи выбор университета и предмета.")
+        else:
+            self._maybe_cancel_previous_menu(message.chat.id)
+            self._ask_to_select_subject(message)
 
     def on_get_current_subject(self, message):
         chat_id = message.chat.id
-        _, _, subject_id, _, _, _ = self.database.get_user_current_state(chat_id)
-        subject_name = self.database.id2subject(subject_id)
-        self.bot_api.send_message(chat_id, f"Текущий выбор предмета: {subject_name}")
+        ready, _, subject_id, _, _, _ = self.database.get_user_current_state(chat_id)
+        if ready != 1:
+            self.bot_api.send_message(chat_id, "Для начала закончи выбор университета и предмета.")
+        else:
+            self._maybe_cancel_previous_menu(chat_id)
+            subject_name = self.database.id2subject(subject_id)
+            self.bot_api.send_message(chat_id, f"Текущий выбор предмет: {subject_name}")
 
 
 if __name__ == "__main__":
