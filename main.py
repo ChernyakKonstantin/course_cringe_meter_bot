@@ -67,6 +67,7 @@ class CringeMeterBot:
         self.bot_api.message_handler(commands=["current_university"])(self.on_get_current_university)
         self.bot_api.message_handler(commands=["change_subject"])(self.on_change_subject)
         self.bot_api.message_handler(commands=["current_subject"])(self.on_get_current_subject)
+        self.bot_api.message_handler(commands=["kon_notify_users"])(self.notify_for_update)
         # #   Menu button handlers
         self.bot_api.message_handler(func=lambda msg: msg.text == "Выбрать предмет")(self.on_change_subject)
         self.bot_api.message_handler(func=lambda msg: msg.text == "Выбранный предмет")(self.on_get_current_subject)
@@ -376,6 +377,15 @@ class CringeMeterBot:
             self._maybe_cancel_previous_menu(chat_id)
             subject_name = self.database.id2subject(subject_id)
             self.bot_api.send_message(chat_id, f"Текущий выбор предмет: {subject_name}")
+
+    def notify_for_update(self, message):
+        text = "Привет! У меня вышло новое обновление и я стал более удобным!\n" \
+               "Обязательно нажми команду /start, чтобы я обновился.\n" \
+               "P.S. Поделись ссылкой на меня со знакомыми."
+        for chat_id in self.database.get_all_users():
+            chat_id = chat_id[0]
+            self.bot_api.set_my_commands([], telebot.types.BotCommandScopeChat(chat_id))
+            self.bot_api.send_message(chat_id, text, reply_markup=telebot.types.ReplyKeyboardRemove())
 
 
 if __name__ == "__main__":

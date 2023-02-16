@@ -80,6 +80,10 @@ class SQLiteDB:
         self.set_response_message_id_for_user(user_id, None)
 
     # ___GETTERS___
+    def get_all_users(self):
+        sql_statement = f"SELECT id from user_activity"
+        users = self._execute(sql_statement)
+        return users
     def get_all_universities(self) -> List[Tuple[int, str]]:
         sql_statement = f"SELECT * from university"
         universities = self._execute(sql_statement)
