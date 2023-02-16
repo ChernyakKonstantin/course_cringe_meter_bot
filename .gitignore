@@ -1,5 +1,6 @@
 *.db
 *.zip
 .idea/*
+.run/*
 .vscode/*
 __pycache__/
